@@ -6,3 +6,4 @@ export type NodeState = {
 };
 
 export type Value = 0 | 1 | "?";
+

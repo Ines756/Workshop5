@@ -52,21 +52,25 @@ export async function node(
         receivedMessages[senderId] = value;
         if (Object.keys(receivedMessages).length >= state.majorityThreshold) {
           const values = Object.values(receivedMessages);
-          const counts = values.reduce((acc, v) => {
-            acc[v] = (acc[v] || 0) + 1;
-            return acc;
-          }, {} as Record<Value, number>);
+          const counts: Record<Value, number> = {
+            0: 0, 1: 0,
+            "?": 0
+          }; 
+          values.forEach((v) => {
+            counts[v] += 1; 
+          });
+
           // Trouver la valeur majoritaire
-          const [majorityValue, majorityCount] = Object.entries(counts).reduce(
-            (max, entry) => entry[1] > max[1] ? entry : max,
-            ["", 0]
-          );
-          // Appliquer la règle de décision de Ben-Or
-          if (majorityCount >= state.majorityThreshold) {
-            state.decided = majorityValue as Value;
+          const majorityValue = counts[0] > counts[1] ? 0 : 1;
+  
+          // Appliquer la règle de Ben-Or
+          if (counts[majorityValue] >= state.majorityThreshold) {
+            state.decided = majorityValue;
+            state.x = majorityValue;
           } else {
-            // Choix aléatoire entre 0 et 1
+            // Choix aléatoire si aucune majorité claire
             state.decided = Math.random() < 0.5 ? 0 : 1;
+            state.x = state.decided;
           }
         }
       }
@@ -83,9 +87,9 @@ export async function node(
         return res.status(400).send("Too many faulty nodes");
       }
       if (isSingleNode()) {
-        state.decided = state.x; // Décision immédiate avec la valeur initiale
+        state.decided = state.x; 
       } else {
-        // Envoyer l'état initial aux autres nœuds
+        
         for (let i = 0; i < N; i++) {
           if (i !== nodeId) {
             try {
@@ -124,10 +128,18 @@ export async function node(
   // TODO implement this
   // get the current state of a node
   // node.get("/getState", (req, res) => {});
+  // node.get("/getState", (req, res) => {});
   node.get("/getState", (req, res) => {
     if (isFaulty) {
-      return res.status(500).json({ error: "faulty" });
+      return res.status(500).json({
+        decided: null,
+        x: null,
+        k: null,
+        messagesReceived: 0,
+        status: "faulty",
+      });
     }
+
     return res.status(200).json({
       nodeId: nodeId,
       x: state.x,
@@ -138,6 +150,7 @@ export async function node(
       status: state.decided !== null ? "Decided" : "In progress",
     });
   });
+
   // Start the server
   const server = node.listen(BASE_NODE_PORT + nodeId, async () => {
     console.log(
