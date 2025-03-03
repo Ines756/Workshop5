@@ -2,6 +2,7 @@ import bodyParser from "body-parser";
 import express from "express";
 import { BASE_NODE_PORT } from "../config";
 import { Value } from "../types";
+import axios from "axios";  // Pour envoyer des messages aux autres nœuds
 
 export async function node(
   nodeId: number, // the ID of the node
@@ -15,36 +16,135 @@ export async function node(
   const node = express();
   node.use(express.json());
   node.use(bodyParser.json());
+  // Variables pour suivre l'état du nœud
+  let state = {
+    x: initialValue, 
+    k: 0, 
+    decided: null as Value | null, 
+    messagesReceived: 0, 
+    majorityThreshold: Math.ceil((N - F) / 2), 
+  };
+
+  const receivedMessages: { [key: number]: Value } = {}; 
+
+  const isSingleNode = () => N === 1;  
 
   // TODO implement this
   // this route allows retrieving the current status of the node
   // node.get("/status", (req, res) => {});
+  node.get("/status", (req, res) => {
+    if (isFaulty) {
+      return res.status(500).send("faulty");
+    }
+    return res.status(200).send("live");
+  });
 
   // TODO implement this
   // this route allows the node to receive messages from other nodes
   // node.post("/message", (req, res) => {});
+  node.post("/message", (req, res) => {
+    const { value, k, senderId } = req.body;
+    if (state.decided === null) {
+      if (isSingleNode()) {
+        state.decided = value; 
+        state.x = value; 
+      } else {
+        receivedMessages[senderId] = value;
+        if (Object.keys(receivedMessages).length >= state.majorityThreshold) {
+          const values = Object.values(receivedMessages);
+          const counts = values.reduce((acc, v) => {
+            acc[v] = (acc[v] || 0) + 1;
+            return acc;
+          }, {} as Record<Value, number>);
+          // Trouver la valeur majoritaire
+          const [majorityValue, majorityCount] = Object.entries(counts).reduce(
+            (max, entry) => entry[1] > max[1] ? entry : max,
+            ["", 0]
+          );
+          // Appliquer la règle de décision de Ben-Or
+          if (majorityCount >= state.majorityThreshold) {
+            state.decided = majorityValue as Value;
+          } else {
+            // Choix aléatoire entre 0 et 1
+            state.decided = Math.random() < 0.5 ? 0 : 1;
+          }
+        }
+      }
+    }
+    res.sendStatus(200);
+  });
 
   // TODO implement this
   // this route is used to start the consensus algorithm
   // node.get("/start", async (req, res) => {});
+  node.get("/start", async (req, res) => {
+    if (nodesAreReady()) {
+      if (F > Math.floor(N / 2)) {
+        return res.status(400).send("Too many faulty nodes");
+      }
+      if (isSingleNode()) {
+        state.decided = state.x; // Décision immédiate avec la valeur initiale
+      } else {
+        // Envoyer l'état initial aux autres nœuds
+        for (let i = 0; i < N; i++) {
+          if (i !== nodeId) {
+            try {
+              await axios.post(`http://localhost:${BASE_NODE_PORT + i}/message`, {
+                senderId: nodeId,
+                value: isFaulty ? (Math.random() < 0.5 ? 0 : 1) : state.x,
+                k: state.k,
+              });
+            } catch (error) {
+              console.error(`Error sending message to node ${i}`);
+            }
+          }
+        }
+      }
+      return res.sendStatus(200);
+    } else {
+      return res.status(400).send("Not all nodes are ready");
+    }
+  });
 
   // TODO implement this
   // this route is used to stop the consensus algorithm
   // node.get("/stop", async (req, res) => {});
+  node.get("/stop", (req, res) => {
+    state = {
+      x: 0,
+      k: 0,
+      decided: null,
+      messagesReceived: 0,
+      majorityThreshold: Math.ceil((N - F) / 2),
+    };
+    isFaulty = true;
+    res.sendStatus(200);
+  });
 
   // TODO implement this
   // get the current state of a node
   // node.get("/getState", (req, res) => {});
-
-  // start the server
+  node.get("/getState", (req, res) => {
+    if (isFaulty) {
+      return res.status(500).json({ error: "faulty" });
+    }
+    return res.status(200).json({
+      nodeId: nodeId,
+      x: state.x,
+      k: state.k,
+      decided: state.decided,
+      messagesReceived: Object.keys(receivedMessages).length,
+      majorityThreshold: state.majorityThreshold,
+      status: state.decided !== null ? "Decided" : "In progress",
+    });
+  });
+  // Start the server
   const server = node.listen(BASE_NODE_PORT + nodeId, async () => {
     console.log(
       `Node ${nodeId} is listening on port ${BASE_NODE_PORT + nodeId}`
     );
-
     // the node is ready
     setNodeIsReady(nodeId);
   });
-
   return server;
 }
